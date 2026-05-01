@@ -115,7 +115,7 @@ The envelope pattern means every section can participate in the same reconciliat
 
 The `phase_gate_log` is an append‑only event stream. It records every meaningful state transition: phase completions, overrides, backward navigations, staleness resolutions, the Phase 4 gate crossing, addendum creations, and Vault queries.  
 
-**Recent schema extension (v1.5 RED audit).** The `event_type` enum in `pcd_schema.json` has been extended with the following values: `prompt_generated`, `grill_me_session_initiated`, `grill_me_session_resolved`, `grill_me_adjustment_dismissed`. Additionally, a new optional `payload` field (type `object` or `null`, `additionalProperties: true`) has been added to `PhaseGateLogEntry` to carry event‑specific structured data.  
+**Recent schema extension (v1.5 RED audit).** The `event_type` enum in `pcd_schema.json` has been extended with the following values: `prompt_generated`, `grill_me_session_initiated`, `grill_me_session_resolved`, `grill_me_adjustment_dismissed`. Additionally, a new optional `payload` field (type `object` or `null`, `additionalProperties: true`) has been added to `PhaseGateLogEntry` to carry event‑specific structured data.   
 
 The log is never edited or deleted. It serves three purposes: post‑hoc debugging, the Phase 4 audit trail, and inputs to the Phase 7 Debrief.  
 
@@ -475,6 +475,8 @@ No SQL. Keyword search is sufficient for a personal database that will grow to h
 | 4     | `boilerplate_components` by inferred tech stack needs       | TID Prompt generation                    |  
 
 Auto‑query results are surfaced to the user in the Phase Workspace as suggestions. The user explicitly opts each result in or out of the prompt context. This keeps the user in control and prevents irrelevant Vault noise from polluting prompts.  
+
+When an auto‑query surfaces at least one result that the user includes, the system appends a `vault_query_logged` event to the Phase Gate Log with payload `{ store, query, result_count, included_ids }`.  
 
 ### 3.5 Vault entries in PCD  
 
@@ -1161,6 +1163,7 @@ const PHASE_4_OUTPUT_SECTIONS = [
   'scope_definition', 'technical_direction', 'product_brief',
   'technical_implementation_document', 'demo_script_and_backup_plan',
 ];
+
 const PHASE_6_OUTPUT_SECTIONS = [
   'pitch_brief', 'judge_objection_map', 'qa_prep_document',
 ];
@@ -1431,7 +1434,7 @@ The pre‑existing intakes for SCAMPER, JTBD, Brainwriting, Differentiation Stre
   id: 'addendum_intake',
   display_name: 'Scope Change Addendum',
   target_pcd_path: 'addenda',
-  target_schema_fragment: tidAddendumSchema,   // $defs/TIDAddendum from pcd_schema.json
+  target_schema_fragment: tidAddendumSchema,   // from $defs/TIDAddendum in pcd_schema.json
   extraction_prompt_template:
     'Extract the addendum content from the LLM output. The output must contain a change_summary, ' +
     'impacted_parts, updated_acceptance_criteria, revised_do_not_build_list, and risks_introduced. ' +
@@ -1440,8 +1443,39 @@ The pre‑existing intakes for SCAMPER, JTBD, Brainwriting, Differentiation Stre
   required_fields: ['content_markdown'],
   optional_fields: [],
   confidence_threshold: 0.7,
-  commit_strategy: 'append',
+  commit_strategy: 'append',   // new strategy — appends extracted object to array at target_pcd_path
 }
+```
+### Common Types (YELLOW‑11). The following supporting types are used throughout the system:
+```
+type UserOverride = {
+  field_path: string;
+  edited_at: string;
+  note: string | null;
+};
+
+type GlobalSettings = {
+  default_rubric_override?: object;   // user‑customized rubric JSON
+};
+
+type VaultQueryHint = {
+  store: 'judges_and_organizers' | 'winning_solutions' | 'boilerplate_components';
+  text_query?: string;
+  tag_filters?: string[];
+  rationale: string;   // why this query is relevant to the prompt
+};
+
+type FlashResult = {
+  data: unknown;           // parsed inner `data` from Flash’s JSON output
+  confidence: Record<string, number>;  // parsed inner `_confidence`, key renamed
+  raw: unknown;            // full Flash response for debugging
+  error: string | null;
+};
+
+type IntakeOutcome =
+  | { tier: 'clean'; data: unknown }
+  | { tier: 'partial'; data: unknown; missingRequired: string[]; lowConfidenceFields: string[]; validatorFlaggedPaths: string[] }
+  | { tier: 'failed'; raw: unknown; error: string | null };
 ```
 
 #### Post‑extract enrichment for `divergent_candidates_intake`  
@@ -1608,6 +1642,25 @@ processIntake → three‑tier outcome
 Diff preview → user confirms → commit to IndexedDB
 ```
 
+**YELLOW-10 CLARIFICATION:** The frontend’s extract.ts performs the following transformation after receiving the proxy response:
+
+```
+// Frontend fetch:
+const proxyResp = await fetch('/api/extract', {...}).then(r => r.json());
+// proxyResp shape: { data: string, raw: object, error?: string }
+
+// Parse the Flash JSON‑text data field:
+const parsed = JSON.parse(proxyResp.data); // Flash returned JSON as a string inside { data }
+const flashResult: FlashResult = {
+  data: parsed.data,
+  confidence: parsed._confidence,
+  raw: proxyResp.raw,
+  error: proxyResp.error ?? null,
+};
+return flashResult;
+```
+The _confidence key is renamed to confidence for internal use; the original _confidence is not retained.
+
 ### 6.7 Intake idempotency  
 
 Re‑running an intake on the same input must produce the same result (modulo Flash temperature). The system does not memoize across runs — each paste‑back is a fresh extraction.  
@@ -1616,7 +1669,9 @@ Re‑running an intake on the same input must produce the same result (modulo Fl
 
 ## 7. Default Judging Rubric  
 
-The full rubric content lives in `default_judging_rubric.md`. This section specifies how it is used by the application.  
+The full rubric content lives in `default_judging_rubric.md`. This section specifies how it is used by the application. 
+
+**YELLOW‑25 clarification to §7.3:** “User‑customized rubric JSON is stored in the settings Dexie table under key default_rubric_override. When present, this overrides the bundled markdown parse for newly‑created projects. ‘Reset to bundled default’ clears this key. Existing projects retain whatever rubric was active at their creation time.
 
 ### 7.1 Loading  
 
@@ -1720,7 +1775,9 @@ startup/
     └── package.json
 ```
 
-TypeScript types for the PCD are generated from `pcd_schema.json` using `json‑schema‑to‑typescript` (build script `npm run gen:types`).  
+TypeScript types from JSON Schema (YELLOW‑12). An npm script gen:types uses json‑schema‑to‑typescript to generate frontend/src/lib/pcd/types.ts from pcd_schema.json. The generated types are re‑exported by schema.ts. This build step ensures static types stay perfectly aligned with the schema.
+
+Common Types (see §6.2) live in frontend/src/lib/types.ts and include UserOverride, GlobalSettings, VaultQueryHint, FlashResult, IntakeOutcome.
 
 PROMPTS.md is the canonical source for prompt content; the template files under `frontend/src/lib/prompts/templates/` are direct ports of that content.  
 
@@ -1802,7 +1859,7 @@ export default {
     const allowedOrigins = (env.ALLOWED_ORIGINS ?? '').split(',').map(s => s.trim());
     if (!allowedOrigins.includes(origin ?? '')) return new Response('Forbidden', { status: 403 });
 
-    // Naive rate limit (per IP, via Workers KV; ~300/day soft cap. Switch to Durable Objects only if abuse appears)
+    // Naive rate limit (per IP, via Workers KV; ~300/day soft cap. Switch to Durable Objects only if abuse appears.)
     if (await isRateLimited(request, env)) return new Response('Too many requests', { status: 429 });
 
     const body = await request.json() as ExtractRequest;
@@ -1817,7 +1874,7 @@ export default {
         generationConfig: {
           response_mime_type: 'application/json',
           response_schema: body.schema,
-          temperature: 0.2,  // low for extraction
+          temperature: 0.2,
         },
       }),
     });
@@ -1835,7 +1892,7 @@ export default {
   },
 };
 ```
-
+The ALLOWED_ORIGINS environment variable is set in wrangler.toml per environment (e.g., ALLOWED_ORIGINS = "https://startup.pages.dev").
 Single endpoint, stateless, no logging beyond rate‑limit counters. The API key never leaves the Worker.  
 
 ### 8.6 What’s deliberately not in MVP architecture  
@@ -1850,30 +1907,340 @@ These are stretch goals; the architecture supports adding them without rewrites.
 
 ---
 
-## 9. Screen Specifications  
+## 9. Screen Specifications
 
-(Remainder of Section 9 unchanged, except as noted below to incorporate RED‑4 fixes and minor clarifications.)  
+This section enumerates every screen in the MVP application: name, purpose, UI elements, interactions, connected screens. The screen breakdown is the most important context for AI-assisted UI implementation; following it prevents UX drift.
 
-### 9.5 Project Workspace  
+### 9.1 Application Lock Screen
 
-… [existing content] …  
+**Purpose:** First screen on every app open. Prompts for the local password to unlock the encrypted store.
 
+**UI elements:**
+
+- App logo/wordmark
+- Password input field (masked)
+- "Unlock" button
+- "First time? Set up Startup" link (only shown when no encrypted store exists yet)
+- Subtle note: "Your data lives only on this device. There is no password recovery."
+
+**Interactions:**
+
+- Submit password → derive key, validate against verification token → on success route to Project Dashboard
+- On failure → show error, retry; lock for 30 seconds after 5 consecutive failures (anti-brute-force)
+- "Set up" link → onboarding flow that creates the password + verification token
+
+**Connected screens:** → Project Dashboard (on success), → First-Run Onboarding (on link click)
+
+### 9.2 First-Run Onboarding
+
+**Purpose:** Set the local password, optionally seed the Vault, optionally configure Gemini Flash proxy URL if self-hosted.
+
+**UI elements:**
+
+- Step 1: Set password (with strength meter, confirm field, irrecoverable warning)
+- Step 2: Acknowledge data locality and irrecoverability (typed phrase confirmation: "I understand this data lives only on this device.")
+- Step 3 (optional): Configure proxy URL (defaults to deployed Cloudflare Worker)
+- Step 4: Take me to my dashboard
+
+**Connected screens:** → Project Dashboard
+
+### 9.3 Project Dashboard
+
+**Purpose:** The home screen. Shows all projects (active + archived), provides entry to Vault and Settings, and is the launch point for new projects.
+
+**UI elements:**
+
+- Header: app wordmark, lock-now button, settings link, Vault link
+- "New Project" primary CTA
+- Active Projects section: list of cards. Each card shows project name, hackathon name, current phase (with phase badge), time remaining (if deadline set), stale-section count if any, and a click-to-open hit area
+- Archived Projects section: collapsed by default, expandable list. Smaller cards, read-only badge
+- Empty state when no projects: directive message ("Create your first project to begin.")
+
+**Interactions:**
+
+- "New Project" → New Project Setup screen
+- Click project card → Project Workspace at the project's current phase
+- Right-click / kebab menu on card → Archive, Rename, Delete (with confirmation), Export PCD
+
+**Connected screens:** → New Project Setup, → Project Workspace, → Vault, → Settings, → Application Lock Screen (on lock)
+
+### 9.4 New Project Setup
+
+**Purpose:** The Phase 1 intake form. Collects all known hackathon details and creates the PCD with `current_phase: 1`.
+
+**UI elements:**
+
+- Hackathon name (required)
+- Organizer: name (required), type (dropdown), notes (optional)
+- Sponsors: dynamic list of {name, industry, tier}
+- Theme / track (optional)
+- Problem statement (large textarea, optional but strongly recommended)
+- Judging criteria (large textarea, optional — triggers Rubric Mapping Intake if filled)
+- Timeline: start, submission deadline, final pitch (datetime pickers)
+- Format: dropdown (in-person / hybrid / virtual / unknown)
+- Team constraints: min/max size, current team members
+- "Create Project" CTA
+
+**Interactions:**
+
+- On create → run Vault auto-queries (judges/organizers by name, winning solutions by domain), surface results inline as opt-in suggestions before proceeding
+- After Vault opt-in → write PCD with default rubric loaded; navigate to Project Workspace at Phase 1
+- If judging criteria provided → on submit, immediately trigger the Rubric Mapping Intake flow before completing Phase 1 setup
+
+**Connected screens:** → Project Workspace (Phase 1)
+
+### 9.5 Project Workspace (the dominant screen)
+
+**Purpose:** The unified phase workspace. Layout adapts per phase but the structure is constant.
+
+**Layout:**
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ Header bar: project name • current phase badge • time-to-deadline  │
+├──────────────┬─────────────────────────────────────────────────────┤
+│              │                                                     │
+│   Phase      │   Phase Workspace Body                              │
+│   Navigator  │                                                     │
+│   (sidebar)  │   ┌─────────────────────────────────────────────┐   │
+│              │   │ Phase Briefing (collapsible)                │   │
+│   • Phase 0  │   └─────────────────────────────────────────────┘   │
+│   • Phase 1✓ │   ┌─────────────────────────────────────────────┐   │
+│   • Phase 2  │   │ Completion Checklist                        │   │
+│   • Phase 3  │   └─────────────────────────────────────────────┘   │
+│   ▶ Phase 4🔒│   ┌─────────────────────────────────────────────┐   │
+│   • Phase 5  │   │ Prompt Generator (stack of generatable     │   │
+│   • Phase 6  │   │   prompts for this phase)                   │   │
+│   • Phase 7  │   └─────────────────────────────────────────────┘   │
+│              │   ┌─────────────────────────────────────────────┐   │
+│   [stale: 2] │   │ Research Intake (per intake, paste-back     │   │
+│              │   │   form + last-extracted preview)            │   │
+│              │   └─────────────────────────────────────────────┘   │
+│              │   ┌─────────────────────────────────────────────┐   │
+│              │   │ Phase Output Preview (read-only render of   │   │
+│              │   │   sections this phase produced)             │   │
+│              │   └─────────────────────────────────────────────┘   │
+│              │                                                     │
+│              │   [Advance to next phase] (gated)                   │
+└──────────────┴─────────────────────────────────────────────────────┘
+```
+
+**UI elements (sidebar):**
+
+- Phase nodes 1-7 (Phase 0 is a separate "Vault" link, not a node)
+- Current phase highlighted
+- Completed phases marked ✓
+- Phase 4 has a lock icon; locks visually when crossed
+- Stale-section count badge at the bottom, click to jump to PCD Viewer with stale filter
+- Backward-navigation click: confirmation modal warning about reconciliation, then jumps to that phase
+
+**UI elements (body):**
+
+- Phase Briefing: directive plain-language explanation of the phase, what it produces, why it matters. 2-4 paragraphs. Collapsible, default open on first phase visit
+- Completion Checklist: required items per phase with checkbox state; greyed if blocked by other items
+- Prompt Generator: each prompt for the phase as a card with title, recommended LLM, "Generate" button. Clicking expands the card to show: the assembled prompt in a copyable code block, a "Show injected context" toggle, a "Copy" button, recommended LLM badge, link out to that LLM's web UI
+- Research Intake: each intake for the phase as a card with title, paste-back textarea, "Process" button. After processing, shows the three-tier outcome UI (clean / partial / failed)
+- Phase Output Preview: read-only PCD render for sections populated by this phase, with "edit" affordance per section
+- "Advance to next phase" CTA at the bottom: enabled only when completion requirements pass; shows a tooltip explaining what's missing when disabled
+- On Grill‑Me‑eligible Prompt Generator cards, an expandable side panel shows the External Context Notes editor (YELLOW‑8)
 - **Addendum Protocol Interface** accessible from Phase 5 (Build) workspace; described in §9.11.  
 
-### 9.11 Addendum Protocol Interface  
 
-**Purpose:** Controlled, friction‑heavy entry point for post‑gate scope changes.  
+**Phase-specific variations:**
 
-**UI elements:**  
+- **Phase 4:** the body grows a "Scope Lock Confirmation" panel with a typed-phrase confirmation (the user types "lock scope" exactly to confirm). The Advance CTA is replaced by "Cross the Phase 4 Gate" with a permanent-action warning
+- **Phase 5:** body is replaced by the Build Checklist (derived from TID features and screens) + a reference panel with quick links to TID, Demo Script, Product Brief. Time-to-deadline gets prominent placement. "Initiate Addendum Protocol" link visible
+- **Phase 6:** runs side-by-side with Phase 5; the sidebar shows Phase 5 and Phase 6 both as "active". Body is the standard Phase Workspace structure for Phase 6 prompts and intakes
+- **Phase 7:** body has the Debrief intake plus a "Vault Update Proposals" panel after the debrief is processed, surfacing the proposed Vault additions for one-click application
 
-- Top: large warning banner ("Scope is locked. Changes are permanently logged.")  
-- Form:  
-  - Cursor build‑state markdown paste (large textarea, feeds `build_state_snapshot` runtime input)  
-  - Proposed change description (textarea, feeds `proposed_change_description`)  
-  - Written justification (textarea, min 80 chars, feeds `user_justification`)  
-- "Generate Addendum Prompt" CTA → expands to show the generated prompt (using the `addendum_protocol` PromptDefinition) and a paste‑back area  
-- After paste‑back and processing: extracted addendum preview, "Append to Project" CTA (triggers `addendum_intake` with commit_strategy `'append'`)  
-- Below the form: list of existing addenda for this project, each with timestamp + justification  
+**AI-powered elements:**
+
+- Prompt Generator: assembles prompts from PCD via context selection (deterministic, not Flash)
+- Research Intake: calls Flash via proxy for structured extraction
+- Stale detection: deterministic graph-walk; surfaced visually
+
+**Connected screens:** → PCD Viewer, → Vault, → Document Export Center (Phase 4+), → Addendum Protocol Interface (post-gate), → Project Dashboard
+
+### 9.6 PCD Viewer
+
+**Purpose:** Full read-only-by-default render of the entire PCD. Section-by-section. Filterable by phase, populated state, and stale state.
+
+**UI elements:**
+
+- Filter bar: phase (multi-select), populated/empty toggle, stale-only toggle
+- TOC with anchor links to each section
+- Each section rendered as: section header, populated/stale badges, last-updated timestamp, populated-by-phase badge, content (markdown-rendered), inline "Edit" button, "Resolve staleness" controls if stale
+- Vault references panel: list of Vault entry cards that informed any section (resolved by ID at render time)
+- External Context Notes section: Markdown textarea bound to external_context_notes.data. Edit‑in‑place; changes flush on blur or Ctrl‑S. (YELLOW‑8)
+- "Export PCD" button: downloads the full markdown file (with embedded JSON code block at end)
+
+**Interactions:**
+
+- Click "Edit" on any section → opens the section in a structured form editor (per-field, validated against schema)
+- Click "Resolve staleness" → modal with three options (Regenerate, Confirm-as-valid, Manual edit)
+- Click any Vault reference → navigates to that Vault entry
+
+**Connected screens:** → Project Workspace (back), → Vault entry detail, → Document Export Center
+
+### 9.7 Phase 5 Build Checklist (YELLOW‑7)
+
+**Purpose:** Track build progress against the TID during Phase 5.
+
+**Derivation:** The checklist is generated from the TID’s `feature_list_with_acceptance_criteria` (Must‑have, Should‑have, Could‑have features) and the `screens` array. Each Must‑have feature is a checklist item; each screen is a 
+checklist item (design + implementation). The checklist also includes:
+
+- Demo‑related tasks: prepare demo data, record backup screen recording, take screenshots of every screen.
+  
+- Addendum warning: if any addenda exist, an item “Review Addenda and adjust build” appears at the top.
+  
+
+**UI elements:**
+
+- List of checkbox items grouped by category (Must‑have, Should‑have, Could‑have, Screens, Demo Prep).
+  
+- Checkbox state is persisted in localStorage (not in the PCD — it’s ephemeral build tracking).
+  
+- Progress bar: (checked / total) × 100%.
+  
+- “Expand all” / “Collapse all” toggle.
+  
+- Each item shows a description sourced from the TID (feature description or screen purpose).
+  
+- A lock‑icon link to the Addendum Protocol at the top, always visible.
+
+### 9.8 Phase 3 Candidate Review (YELLOW‑9)
+
+**Purpose:** Browse the divergent candidate portfolio generated in Step 3e, compare candidates, and optionally remix.
+
+**UI elements:**
+
+- **Candidate cards** — each card displays: name, archetype badge (colored), one‑line 
+  description, three score bars (Innovation, Impact, Feasibility), source 
+  notes (if remixed).
+  
+- **Filter bar** — filter by archetype (multi‑select chips).
+  
+- **Comparison view** (side‑by‑side) — select up to three candidates; scores and distinguishing factors are shown in a table.
+  
+- **Remix flow** — button “Remix selected”. Opens a modal where the user picks elements 
+  from two or more candidates (multi‑select checkboxes with short labels 
+  like “dashboard from Candidate A” + “AI coach from Candidate C”). A 
+  textarea for the remix name and a button “Generate Remix” calls an LLM 
+  (via a brief prompt) to produce a merged description and scores, or the 
+  user can write manually. The result is a new `CandidateIdea` with `is_remix = true`, `remix_source_ids` populated, and an `id` minted by the app.
+  
+- **Select as Final** — button to set `chosen_direction.selected_candidate_id` to a candidate’s id (and populate `selected_idea` / `user_rationale` accordingly).
+  
+
+**Persistence:** Writes to `ideation_record.data.candidate_portfolio.candidates[]`.
+
+### 9.9 Document Export Center
+
+**Purpose:** Download the Phase 4 outputs as standalone files for use in Cursor, plus the full PCD export.
+
+**UI elements:**
+
+- Cards for each downloadable artifact:
+  - Product Brief (.md)
+  - Technical Implementation Document (.md)
+  - Demo Script & Backup Plan (.md)
+  - Full PCD (.md, includes embedded JSON)
+- Each card shows: last updated, download button, "Copy to clipboard" button, preview link
+- Note about Cursor handoff: "Drop these files into your Cursor project as context. The TID is the primary build reference."
+
+**Connected screens:** → PCD Viewer, → Project Workspace
+
+### 9.10 Vault — Top Level
+
+**Purpose:** Browse and search the persistent cross-project infrastructure.
+
+**UI elements:**
+
+- Tabs: Judges & Organizers | Winning Solutions | Boilerplate Library
+- Each tab is a list view with: search box, tag filter chips, sort controls, "Add new" CTA
+- Future tab placeholder: "Client Vault" (disabled, with "Stretch goal" tag)
+
+**Interactions:**
+
+- Search → keyword + tag filter executed against IndexedDB indexes
+- Click entry → entry detail screen
+- Add new → entry creation form
+
+**Connected screens:** → Vault entry detail, → Vault entry creation, → Project Dashboard
+
+### 9.11 Vault Entry Detail / Edit
+
+**Purpose:** View and edit a single Vault entry. One screen handles all three entry types via different field configurations.
+
+**UI elements (varies by type):**
+
+- All types: id (read-only), name, tags, created/updated timestamps, free-form notes
+- Judge/Organizer: type, organization, professional background, events appeared at, observed tendencies
+- Winning Solution: event, organizer, domain, year, summary, why it won, source URL
+- Boilerplate: component name, category, description, used-in events, what worked, what didn't, repo pointer
+- "References" panel: which projects reference this entry (read-only list)
+- Save / Delete CTAs
+
+**Connected screens:** → Vault top level, → Project Workspace (when accessed via reference)
+
+### 9.12 Settings
+
+**Purpose:** All app-level configuration. JSON-editable for MVP.
+
+**UI elements:**
+
+- Sections (each as an expandable panel):
+  - Default Judging Rubric: JSON textarea with validate-on-save, reset-to-bundled-default link
+  - LLM Preferences: JSON object mapping prompt-type-IDs to recommended-LLM strings; affects which LLM is suggested in Prompt Generator
+  - Proxy URL: defaults to deployed Worker; editable for self-hosters
+  - Deadline notification intervals: array of percentages (default `[50, 75, 90]`)
+  - Export format preferences: include-machine-readable-block toggle, etc.
+- Below settings: "Change password" flow (re-encrypts the entire IndexedDB store with a new key)
+- Below that: "Danger zone" — Clear all data (typed-phrase confirmation, irreversible)
+
+**Connected screens:** → Project Dashboard
+
+### 9.13 Addendum Protocol Interface
+
+**Purpose:** Controlled, friction-heavy entry point for post-gate scope changes.
+
+**UI elements:**
+
+- Top: large warning banner ("Scope is locked. Changes are permanently logged.")
+- Form:
+  - Cursor build-state markdown paste (large textarea)
+  - Proposed change description (textarea, min 200 chars)
+  - Written justification (textarea, min 80 chars)
+- "Generate Addendum Prompt" CTA → expands to show the prompt and a paste-back area
+- After paste-back and processing: extracted addendum preview, "Append to Project" CTA
+- Below the form: list of existing addenda for this project, each with timestamp + justification
+
+**Connected screens:** → Project Workspace, → PCD Viewer (TID section, where addenda are shown)
+
+### 9.14 Phase Gate Log Viewer
+
+**Purpose:** Read-only audit trail of every state transition.
+
+**UI elements:**
+
+- Filter bar: event type, phase, date range
+- Chronological list of log entries with: timestamp, phase badge, event type badge, details, user_justification (where present)
+- Export to CSV button (for the Phase 7 Debrief)
+
+**Connected screens:** → Project Workspace, → PCD Viewer
+
+### 9.15 Section Editor (modal/panel)
+
+**Purpose:** Structured per-field editing of any PCD section. Used from the PCD Viewer's "Edit" buttons.
+
+**UI elements:**
+
+- Header: section name, phase badge, populated/stale state
+- Form fields generated from the section's JSON Schema fragment (uses a generic JSON-Schema-to-form renderer; same pattern as the partial-extract review form in §6)
+- "Save" CTA (validates against schema before write; logs to user_overrides on each field touched)
+- "Cancel" CTA
+
+**Connected screens:** → PCD Viewer, → Project Workspace
 
 ---
 
