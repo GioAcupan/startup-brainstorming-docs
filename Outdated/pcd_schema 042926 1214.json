@@ -1,0 +1,1392 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://startup.local/schemas/pcd.schema.json",
+  "title": "Project Context Document (PCD)",
+  "description": "The canonical, typed data structure for a single hackathon project. One PCD per project. Every read and write goes through this schema. Render layer (JSON-to-Markdown) consumes this; canonical store IS this.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_id",
+    "project_name",
+    "created_at",
+    "current_phase",
+    "phase_4_gate_crossed",
+    "sections",
+    "phase_gate_log"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0",
+      "description": "PCD schema version. Used for migration when the schema evolves."
+    },
+    "project_id": {
+      "type": "string",
+      "description": "ULID. Stable identifier used for cross-references and Vault links."
+    },
+    "project_name": {
+      "type": "string",
+      "description": "Human-readable name. Defaults to the hackathon name."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "archived_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Null while the project is active. Set when archived (post-Phase 7 or manually). Archived projects are read-only; reopening clears this field."
+    },
+    "current_phase": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7,
+      "description": "Active phase number. Phase 0 is Vault-level, not project-level."
+    },
+    "phase_4_gate_crossed": {
+      "type": "boolean",
+      "description": "Once true, never returns to false. Backward navigation past Phase 4 is forbidden. Scope changes go through the Addendum Protocol."
+    },
+    "vault_references": {
+      "type": "object",
+      "description": "References (by ID) to Vault entries that informed this project. Populated as queries are made during phases. Stores IDs only — entry contents are not duplicated into the PCD.",
+      "properties": {
+        "judge_organizer_ids": { "type": "array", "items": { "type": "string" } },
+        "winning_solution_ids": { "type": "array", "items": { "type": "string" } },
+        "boilerplate_component_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "description": "All content sections, each with shared metadata via the SectionEnvelope pattern. Order here is canonical render order.",
+      "required": [
+        "hackathon_profile",
+        "judge_intelligence",
+        "active_judging_rubric",
+        "problem_analysis",
+        "competitive_landscape",
+        "user_research",
+        "ideation_record",
+        "chosen_direction",
+        "scope_definition",
+        "technical_direction",
+        "product_brief",
+        "technical_implementation_document",
+        "demo_script_and_backup_plan",
+        "pitch_brief",
+        "judge_objection_map",
+        "qa_prep_document",
+        "debrief_record",
+        "external_context_notes"
+      ],
+      "properties": {
+        "hackathon_profile":               { "$ref": "#/$defs/Section_HackathonProfile" },
+        "judge_intelligence":              { "$ref": "#/$defs/Section_JudgeIntelligence" },
+        "active_judging_rubric":           { "$ref": "#/$defs/Section_ActiveJudgingRubric" },
+        "problem_analysis":                { "$ref": "#/$defs/Section_ProblemAnalysis" },
+        "competitive_landscape":           { "$ref": "#/$defs/Section_CompetitiveLandscape" },
+        "user_research":                   { "$ref": "#/$defs/Section_UserResearch" },
+        "ideation_record":                 { "$ref": "#/$defs/Section_IdeationRecord" },
+        "chosen_direction":                { "$ref": "#/$defs/Section_ChosenDirection" },
+        "scope_definition":                { "$ref": "#/$defs/Section_ScopeDefinition" },
+        "technical_direction":             { "$ref": "#/$defs/Section_TechnicalDirection" },
+        "product_brief":                   { "$ref": "#/$defs/Section_ProductBrief" },
+        "technical_implementation_document": { "$ref": "#/$defs/Section_TID" },
+        "demo_script_and_backup_plan":     { "$ref": "#/$defs/Section_DemoScript" },
+        "pitch_brief":                     { "$ref": "#/$defs/Section_PitchBrief" },
+        "judge_objection_map":             { "$ref": "#/$defs/Section_JudgeObjectionMap" },
+        "qa_prep_document":                { "$ref": "#/$defs/Section_QAPrep" },
+        "debrief_record":                  { "$ref": "#/$defs/Section_Debrief" },
+        "external_context_notes":          { "$ref": "#/$defs/Section_ExternalContextNotes" }
+      }
+    },
+    "phase_gate_log": {
+      "type": "array",
+      "description": "Append-only log of phase completions, overrides, addenda, and reconciliation actions. Forms the auditable history of the project.",
+      "items": { "$ref": "#/$defs/PhaseGateLogEntry" }
+    },
+    "addenda": {
+      "type": "array",
+      "description": "TID Addenda created via the Addendum Protocol. Original TID is never edited; addenda are appended.",
+      "items": { "$ref": "#/$defs/TIDAddendum" }
+    }
+  },
+
+  "$defs": {
+
+    "SectionEnvelope": {
+      "type": "object",
+      "description": "Metadata wrapper present on every section. Content lives in `data`. Staleness, dependencies, and provenance are tracked here.",
+      "required": ["data", "is_populated", "is_stale", "last_updated", "populated_by_phase"],
+      "properties": {
+        "data": {
+          "description": "Section-specific content. Schema is defined per Section_* type."
+        },
+        "is_populated": {
+          "type": "boolean",
+          "description": "False when the section has not yet been filled by its phase. Distinct from being empty — a populated section may legitimately have empty subfields."
+        },
+        "is_stale": {
+          "type": "boolean",
+          "description": "True when an upstream dependency was modified after this section was populated. Cleared by Regenerate, Confirm-as-valid, or Manual-edit reconciliation."
+        },
+        "stale_reason": {
+          "type": ["string", "null"],
+          "description": "Human-readable explanation. E.g. 'problem_analysis was updated on 2026-04-27 14:32; this section was derived from the previous version.'"
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "populated_by_phase": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7
+        },
+        "extraction_confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Self-reported confidence from the Flash extractor for the most recent intake. Null for manually-edited sections."
+        },
+        "user_overrides": {
+          "type": "array",
+          "description": "Audit trail of manual edits made after extraction. Useful for debugging extraction quality.",
+          "items": {
+            "type": "object",
+            "required": ["field_path", "edited_at"],
+            "properties": {
+              "field_path": { "type": "string" },
+              "edited_at": { "type": "string", "format": "date-time" },
+              "note": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "PhaseGateLogEntry": {
+      "type": "object",
+      "required": ["timestamp", "event_type", "phase"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "phase": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "phase_completed",
+            "phase_skipped_with_override",
+            "competitive_premortem_override",
+            "backward_navigation",
+            "staleness_resolved_regenerate",
+            "staleness_resolved_confirm_valid",
+            "staleness_resolved_manual_edit",
+            "phase_4_gate_crossed",
+            "addendum_created",
+            "vault_query_logged"
+          ]
+        },
+        "details": { "type": "string" },
+        "user_justification": {
+          "type": ["string", "null"],
+          "description": "Required for override events. Optional otherwise."
+        }
+      }
+    },
+
+    "TIDAddendum": {
+      "type": "object",
+      "required": ["addendum_id", "created_at", "user_justification", "content_markdown", "build_state_snapshot"],
+      "properties": {
+        "addendum_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "user_justification": {
+          "type": "string",
+          "description": "Required. Why this scope change is necessary."
+        },
+        "content_markdown": {
+          "type": "string",
+          "description": "The addendum body itself: what changes, what it impacts, revised do-not-build list."
+        },
+        "build_state_snapshot": {
+          "type": "string",
+          "description": "Pasted Cursor build-state markdown the addendum was authored against. Preserved for audit."
+        }
+      }
+    },
+
+    "Section_HackathonProfile": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "hackathon_name": { "type": "string" },
+                "organizer": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "type": {
+                      "type": "string",
+                      "enum": ["government", "ngo", "corporate", "academic", "community", "vc_backed", "other", "unknown"]
+                    },
+                    "notes": { "type": ["string", "null"] }
+                  }
+                },
+                "sponsors": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": { "type": "string" },
+                      "industry": { "type": ["string", "null"] },
+                      "tier": { "type": ["string", "null"], "description": "e.g. title sponsor, gold, silver" }
+                    }
+                  }
+                },
+                "theme": { "type": ["string", "null"] },
+                "track": { "type": ["string", "null"] },
+                "problem_statement_raw": {
+                  "type": ["string", "null"],
+                  "description": "Verbatim problem statement as released by organizers. Never edited."
+                },
+                "judging_criteria_raw": {
+                  "type": ["string", "null"],
+                  "description": "Verbatim judging criteria as released. May be null at Phase 1 if not yet announced."
+                },
+                "timeline": {
+                  "type": "object",
+                  "properties": {
+                    "start_at": { "type": ["string", "null"], "format": "date-time" },
+                    "submission_deadline_at": { "type": ["string", "null"], "format": "date-time" },
+                    "final_pitch_at": { "type": ["string", "null"], "format": "date-time" }
+                  }
+                },
+                "format": {
+                  "type": "string",
+                  "enum": ["in_person", "hybrid", "virtual", "unknown"]
+                },
+                "team_constraints": {
+                  "type": "object",
+                  "properties": {
+                    "min_size": { "type": ["integer", "null"] },
+                    "max_size": { "type": ["integer", "null"] },
+                    "current_team": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": { "type": "string" },
+                          "role": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                },
+                "flagged_unknowns": {
+                  "type": "array",
+                  "description": "Things the user knows are unresolved and must monitor (e.g. 'judges not yet announced').",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_JudgeIntelligence": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "judge_personas": {
+                  "type": "array",
+                  "description": "Composite profiles of likely judges. May be inferred from organizer/sponsor signals when judges are not yet announced.",
+                  "items": {
+                    "type": "object",
+                    "required": ["persona_label", "professional_background", "values", "skepticisms"],
+                    "properties": {
+                      "persona_label": { "type": "string", "description": "e.g. 'Government domain expert', 'Corporate sponsor technologist'" },
+                      "is_inferred": { "type": "boolean", "description": "True if no specific judge name is associated; persona is built from proxy signals." },
+                      "named_judges": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "name": { "type": "string" },
+                            "organization": { "type": ["string", "null"] },
+                            "vault_judge_id": {
+                              "type": ["string", "null"],
+                              "description": "ID into the Judge & Organizer Database if this judge is on file."
+                            }
+                          }
+                        }
+                      },
+                      "professional_background": { "type": "string" },
+                      "values": {
+                        "type": "array",
+                        "description": "What this persona is likely to value in a solution.",
+                        "items": { "type": "string" }
+                      },
+                      "skepticisms": {
+                        "type": "array",
+                        "description": "What this persona is likely to be skeptical of.",
+                        "items": { "type": "string" }
+                      },
+                      "memorable_solution_patterns": {
+                        "type": "array",
+                        "description": "What kinds of solutions have impressed similar judges historically.",
+                        "items": { "type": "string" }
+                      }
+                    }
+                  }
+                },
+                "past_winner_patterns": {
+                  "type": "array",
+                  "description": "What has won past hackathons run by this organizer or in this domain.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "summary": { "type": "string" },
+                      "source": { "type": ["string", "null"] },
+                      "vault_winning_solution_id": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "criteria_drift_warnings": {
+                  "type": "array",
+                  "description": "Flags raised by the system about ways the active rubric may shift based on the organizer profile.",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ActiveJudgingRubric": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "required": ["rubric_source", "criteria"],
+              "properties": {
+                "rubric_source": {
+                  "type": "string",
+                  "enum": ["default", "official", "official_with_default_supplement"]
+                },
+                "criteria": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "description", "weight", "judge_questions"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "description": { "type": "string" },
+                      "weight": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "Fractional weight. All criteria weights must sum to 1.0."
+                      },
+                      "judge_questions": {
+                        "type": "array",
+                        "description": "The questions a judge in this category typically asks themselves.",
+                        "items": { "type": "string" }
+                      }
+                    }
+                  }
+                },
+                "unmapped_official_criteria": {
+                  "type": "array",
+                  "description": "Official criteria fragments that didn't map cleanly onto the rubric schema. Flagged for user interpretation.",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ProblemAnalysis": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "team_framing": {
+                  "type": "string",
+                  "description": "The team's own framing of the problem. May differ from organizer's verbatim language."
+                },
+                "five_whys_chain": {
+                  "type": "array",
+                  "description": "Sequential root-cause chain. Each entry is one 'why?' deeper than the last.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "depth": { "type": "integer", "minimum": 1 },
+                      "question": { "type": "string" },
+                      "answer": { "type": "string" }
+                    }
+                  }
+                },
+                "stakeholder_map": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["stakeholder", "relationship"],
+                    "properties": {
+                      "stakeholder": { "type": "string" },
+                      "relationship": {
+                        "type": "string",
+                        "enum": ["affected", "responsible", "authority", "influencer", "other"]
+                      },
+                      "notes": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "hmw_reframes": {
+                  "type": "array",
+                  "description": "How-Might-We reframes, prioritized to non-obvious angles.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "reframe": { "type": "string" },
+                      "is_non_obvious": { "type": "boolean" },
+                      "rationale": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "differentiation_angles": {
+                  "type": "array",
+                  "description": "Top 2-3 angles where differentiation is possible. Cross-referenced with competitive_landscape.",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_CompetitiveLandscape": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "required": ["premortem_completed"],
+              "properties": {
+                "premortem_completed": {
+                  "type": "boolean",
+                  "description": "Hard requirement for Phase 2 completion. Cannot be bypassed without Phase Gate Log override."
+                },
+                "predicted_average_solutions": {
+                  "type": "array",
+                  "description": "The 3-5 solutions most teams will converge on. Map of the crowded space.",
+                  "items": {
+                    "type": "object",
+                    "required": ["solution_name", "description"],
+                    "properties": {
+                      "solution_name": { "type": "string" },
+                      "description": { "type": "string" },
+                      "likely_features": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "likely_framework": { "type": ["string", "null"] },
+                      "why_teams_will_default_here": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "spaces_to_avoid": {
+                  "type": "array",
+                  "description": "Explicit no-go directions extracted from the predicted average solutions.",
+                  "items": { "type": "string" }
+                },
+                "differentiation_seams": {
+                  "type": "array",
+                  "description": "Positive-direction counterpart to spaces_to_avoid. Gaps between predicted-average archetypes — unmet stakeholders, missing dimensions, ignored constraints — where differentiation oxygen exists. Notes for the team to ideate against in Phase 3, not solutions themselves.",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_UserResearch": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "research_status": {
+                  "type": "string",
+                  "enum": ["not_started", "in_progress", "complete", "skipped_no_user_access"],
+                  "description": "Tracks whether real user research happened. 'skipped_no_user_access' is the legitimate fallback when target users are unreachable."
+                },
+                "personas": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "description"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "description": { "type": "string" },
+                      "is_inferred": {
+                        "type": "boolean",
+                        "description": "True if persona is inferred from the brief rather than from real user contact."
+                      },
+                      "pain_points": { "type": "array", "items": { "type": "string" } },
+                      "goals": { "type": "array", "items": { "type": "string" } },
+                      "psychographics": {
+                        "type": "object",
+                        "description": "Personality traits and core values. Optional; populated by the user research package prompt's expanded persona schema. Personality traits and values are kept separate by design — they describe different things.",
+                        "properties": {
+                          "personality_traits": {
+                            "type": "array",
+                            "description": "3-5 concrete traits, e.g. 'risk-averse', 'status-driven', 'impatient with bureaucracy'.",
+                            "items": { "type": "string" }
+                          },
+                          "values": {
+                            "type": "array",
+                            "description": "3-5 things this persona ranks above other things, e.g. 'autonomy', 'family stability', 'professional reputation'.",
+                            "items": { "type": "string" }
+                          }
+                        }
+                      },
+                      "technology_behavior": {
+                        "type": "object",
+                        "description": "How this persona interacts with technology in everyday life. Optional. Used by Phase 3 ideation prompts to ground feature design in real platform habits, not assumed ones.",
+                        "properties": {
+                          "platforms_used": {
+                            "type": "array",
+                            "description": "Specific named apps, sites, or channels this persona uses regularly. 'Messenger', 'TikTok', 'GCash' — not 'social media' or 'banking apps'.",
+                            "items": { "type": "string" }
+                          },
+                          "usage_patterns": {
+                            "type": "array",
+                            "description": "When, how often, and what for. e.g. 'checks Messenger continuously during work hours; opens banking app only on payday'.",
+                            "items": { "type": "string" }
+                          }
+                        }
+                      },
+                      "sources_of_influence": {
+                        "type": "array",
+                        "description": "3-5 specific influence vectors this persona trusts when forming opinions or making decisions. Specific named individuals, institutions, communities, media outlets, or peer groups — not generic categories like 'friends' or 'social media'.",
+                        "items": { "type": "string" }
+                      }
+                    }
+                  }
+                },
+                "interview_insights": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "insight": { "type": "string" },
+                      "source": { "type": ["string", "null"] },
+                      "validates_assumption": {
+                        "type": ["string", "null"],
+                        "description": "Free-text assumption being validated, OR a hypothesis id from research_hypotheses[].id (e.g. 'hyp_01HXY...'). The render layer detects the id pattern and links to the hypothesis."
+                      },
+                      "challenges_assumption": {
+                        "type": ["string", "null"],
+                        "description": "Free-text assumption being challenged, OR a hypothesis id from research_hypotheses[].id. Same id-detection rule as validates_assumption."
+                      }
+                    }
+                  }
+                },
+                "validated_pain_points": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "research_hypotheses": {
+                  "type": "array",
+                  "description": "Falsifiable beliefs the team holds about the problem space, produced by the phase_2_research_hypotheses prompt. Each hypothesis is testable by user research; interview_insights[].validates_assumption / .challenges_assumption may reference these by id.",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "category", "statement"],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "ULID-prefixed identifier, e.g. 'hyp_01HXY...'. Used as the cross-reference target from interview_insights."
+                      },
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "pain_prevalence_severity",
+                          "root_causes_unsolved",
+                          "emerging_tech_opportunities",
+                          "stakeholder_ecosystem",
+                          "adoption_feasibility_risk"
+                        ],
+                        "description": "1:1 mapping from the prompt's five headings. Sort to canonical category order on render."
+                      },
+                      "statement": {
+                        "type": "string",
+                        "description": "Single-sentence falsifiable assertion. Names a specific population, behavior, or mechanism."
+                      },
+                      "falsification_signal": {
+                        "type": ["string", "null"],
+                        "description": "Optional: what evidence would disprove this hypothesis. Populated by the user during research planning, not by the LLM."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": ["open", "validated", "invalidated", "inconclusive"],
+                        "default": "open",
+                        "description": "Updated as interview_insights accumulate. The render layer derives a status proposal from referenced insights, but the canonical value is set by the user."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_IdeationRecord": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "scamper_outputs": {
+                  "type": "object",
+                  "properties": {
+                    "substitute":   { "type": "array", "items": { "type": "string" } },
+                    "combine":      { "type": "array", "items": { "type": "string" } },
+                    "adapt":        { "type": "array", "items": { "type": "string" } },
+                    "modify":       { "type": "array", "items": { "type": "string" } },
+                    "put_to_other_use": { "type": "array", "items": { "type": "string" } },
+                    "eliminate":    { "type": "array", "items": { "type": "string" } },
+                    "reverse":      { "type": "array", "items": { "type": "string" } },
+                    "calibrated_experts": {
+                      "type": "object",
+                      "description": "The calibrated identities of the domain expert and technical expert used to seed the SCAMPER dialogue, derived from hackathon_profile.organizer_type and theme. Auditable provenance for the SCAMPER output — lets the user verify the lens was correct for this hackathon. Optional; populated when the LLM emits the required calibrated-experts header.",
+                      "properties": {
+                        "domain_expert": {
+                          "type": ["string", "null"],
+                          "description": "e.g. 'bank executive (risk & compliance lens)' or 'public-sector clinician (care continuity lens)'."
+                        },
+                        "technical_expert": {
+                          "type": ["string", "null"],
+                          "description": "e.g. 'fintech engineer (core-banking integration lens)' or 'interoperability engineer (HL7/FHIR lens)'."
+                        }
+                      }
+                    }
+                  }
+                },
+                "jtbd_analysis": {
+                  "type": "object",
+                  "properties": {
+                    "functional_jobs": { "type": "array", "items": { "type": "string" } },
+                    "emotional_jobs":  { "type": "array", "items": { "type": "string" } },
+                    "social_jobs":     { "type": "array", "items": { "type": "string" } },
+                    "unmet_dimensions":{ "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "brainwriting_round": {
+                  "type": "object",
+                  "properties": {
+                    "conventional_ideas": { "type": "array", "items": { "type": "string" } },
+                    "unconventional_ideas": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "differentiation_stress_tests": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "idea": { "type": "string" },
+                      "differentiation_argument": { "type": "string" },
+                      "memorability_argument": { "type": "string" }
+                    }
+                  }
+                },
+                "scored_shortlist": {
+                  "type": "array",
+                  "description": "Ideas scored against the active rubric by the Downselection Prompt.",
+                  "items": {
+                    "type": "object",
+                    "required": ["idea", "rubric_scores", "feasibility_score", "differentiation_score", "total_score"],
+                    "properties": {
+                      "idea": { "type": "string" },
+                      "rubric_scores": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "criterion_name": { "type": "string" },
+                            "score": { "type": "number", "minimum": 0, "maximum": 10 },
+                            "rationale": { "type": ["string", "null"] }
+                          }
+                        }
+                      },
+                      "feasibility_score": { "type": "number", "minimum": 0, "maximum": 10 },
+                      "differentiation_score": { "type": "number", "minimum": 0, "maximum": 10 },
+                      "total_score": { "type": "number" },
+                      "rationale_summary": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "team_idea_seed": {
+                  "type": ["object", "null"],
+                  "description": "Output of the optional Step 3a Idea Seed Challenge. Populated only when the user supplied a preconceived idea and ran it through the Grill-Me interrogation. Null when Step 3a was skipped.",
+                  "required": ["original_text", "challenge_outcome", "verdict_rationale"],
+                  "properties": {
+                    "original_text": {
+                      "type": "string",
+                      "description": "The user's preconceived idea, verbatim, as entered before the Idea Seed Challenge."
+                    },
+                    "challenge_outcome": {
+                      "type": "string",
+                      "enum": ["adopt_as_seed", "refined", "rejected"],
+                      "description": "Verdict from the Grill-Me dialogue. 'adopt_as_seed' = use the seed unchanged; 'refined' = use the seed with the refinement captured in refined_text; 'rejected' = do not carry the seed forward."
+                    },
+                    "refined_text": {
+                      "type": ["string", "null"],
+                      "description": "The refined idea text. Required when challenge_outcome === 'refined'; null otherwise."
+                    },
+                    "verdict_rationale": {
+                      "type": "string",
+                      "description": "Resolved Summary rationale from the Grill-Me dialogue. Explains why the seed was adopted, refined, or rejected."
+                    }
+                  }
+                },
+                "candidate_portfolio": {
+                  "type": ["object", "null"],
+                  "description": "Output of Step 3e Divergent Candidate Generation. The 3-5 candidate ideas synthesized from the upstream ideation pipeline (SCAMPER, JTBD, Brainwriting). Null until Step 3e has been completed.",
+                  "required": ["candidates"],
+                  "properties": {
+                    "candidates": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 5,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "name",
+                          "description",
+                          "innovation_score",
+                          "impact_score",
+                          "feasibility_score",
+                          "distinguishing_factors"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "ULID. Stable identifier; referenced from chosen_direction.data.selected_candidate_id when this candidate is chosen as the final direction."
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "Short candidate name."
+                          },
+                          "description": {
+                            "type": "string",
+                            "description": "One-line description of the candidate idea."
+                          },
+                          "innovation_score": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "1-5 scale, calibrated against the active rubric's Innovation criterion."
+                          },
+                          "impact_score": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "1-5 scale, calibrated against the active rubric's Problem-Solution Fit criterion."
+                          },
+                          "feasibility_score": {
+                            "type": "number",
+                            "minimum": 1,
+                            "maximum": 5,
+                            "description": "1-5 scale, calibrated against the active rubric's Feasibility & Viability criterion."
+                          },
+                          "distinguishing_factors": {
+                            "type": "array",
+                            "description": "Why this candidate is structurally different from the others — and from the predicted-average solutions in competitive_landscape.",
+                            "items": { "type": "string" }
+                          },
+                          "archetype": {
+                            "type": "string",
+                            "enum": ["safe_utility", "weird_gem", "moonshot", "social_impact", "unassigned"],
+                            "description": "Enforced Diversity Archetype label. 'unassigned' is used when archetypes_enforced was false at generation time."
+                          },
+                          "is_remix": {
+                            "type": "boolean",
+                            "description": "True when this candidate was produced by the in-app candidate-review remix UI rather than emitted directly by the LLM."
+                          },
+                          "remix_source_ids": {
+                            "type": "array",
+                            "description": "When is_remix is true, the ids of the candidates that were combined to produce this remix. Empty array otherwise.",
+                            "items": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "archetypes_enforced": {
+                  "type": "boolean",
+                  "description": "Mirrors the Step 3e Enforced Diversity Archetypes toggle state at generation time. Captured for audit so the Phase 7 debrief can correlate diversity-on vs diversity-off runs against outcomes. Default true."
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ChosenDirection": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "selected_idea": { "type": "string" },
+                "user_rationale": {
+                  "type": "string",
+                  "description": "User's stated reasoning for the selection. Required."
+                },
+                "key_differentiators": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "premortem_overlap_check": {
+                  "type": "object",
+                  "properties": {
+                    "overlap_detected": { "type": "boolean" },
+                    "overlap_reasoning": { "type": ["string", "null"] },
+                    "user_acknowledged_overlap": {
+                      "type": "boolean",
+                      "description": "True only if overlap_detected was true and the user explicitly chose to proceed anyway."
+                    }
+                  }
+                },
+                "selected_candidate_id": {
+                  "type": ["string", "null"],
+                  "description": "Optional. When non-null, references CandidateIdea.id from ideation_record.data.candidate_portfolio.candidates[]; the PCD Viewer resolves this id at render time to show provenance ('Selected: Candidate X — Weird Gem archetype'). Null when the chosen direction was authored manually rather than selected from the portfolio."
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ScopeDefinition": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "moscow": {
+                  "type": "object",
+                  "properties": {
+                    "must_have":   { "type": "array", "items": { "$ref": "#/$defs/FeatureSpec" } },
+                    "should_have": { "type": "array", "items": { "$ref": "#/$defs/FeatureSpec" } },
+                    "could_have":  { "type": "array", "items": { "$ref": "#/$defs/FeatureSpec" } },
+                    "wont_have":   { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "mvp_definition": {
+                  "type": "string",
+                  "description": "One-paragraph definition of the minimum viable demonstrable build."
+                },
+                "explicit_out_of_scope": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "FeatureSpec": {
+      "type": "object",
+      "required": ["feature_name", "acceptance_criteria"],
+      "properties": {
+        "feature_name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+
+    "Section_TechnicalDirection": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "tech_stack": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["component", "choice", "justification"],
+                    "properties": {
+                      "component": { "type": "string", "description": "e.g. frontend framework, database, hosting" },
+                      "choice": { "type": "string", "description": "e.g. Next.js, Supabase, Vercel" },
+                      "justification": { "type": "string" },
+                      "vault_boilerplate_id": {
+                        "type": ["string", "null"],
+                        "description": "Reference to a Boilerplate Library entry that fulfills this component."
+                      }
+                    }
+                  }
+                },
+                "architecture_summary": { "type": "string" },
+                "data_models": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "model_name": { "type": "string" },
+                      "fields": { "type": "string", "description": "Free-text or pseudocode definition." },
+                      "relationships": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "api_design": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "endpoint_or_integration": { "type": "string" },
+                      "purpose": { "type": "string" },
+                      "auth": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "known_risks": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ProductBrief": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "description": "Shape Up format. Human-readable; for judges, mentors, teammates.",
+              "properties": {
+                "problem_statement_team_framing": { "type": "string" },
+                "appetite": { "type": "string", "description": "What the team commits to building within available time." },
+                "solution_sketch": { "type": "string" },
+                "key_user_flows": { "type": "array", "items": { "type": "string" } },
+                "rabbit_holes_to_avoid": { "type": "array", "items": { "type": "string" } },
+                "out_of_scope": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_TID": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "description": "Technical Implementation Document. Exhaustive; for Cursor and CLI tools.",
+              "properties": {
+                "feature_list_with_acceptance_criteria": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/FeatureSpec" }
+                },
+                "tech_stack_with_justification": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "component": { "type": "string" },
+                      "choice": { "type": "string" },
+                      "justification": { "type": "string" }
+                    }
+                  }
+                },
+                "system_architecture": { "type": "string" },
+                "data_models": { "type": "string" },
+                "api_specs": { "type": "string" },
+                "screens": {
+                  "type": "array",
+                  "description": "Screen-by-screen breakdown. The single most important field for productive AI coding.",
+                  "items": {
+                    "type": "object",
+                    "required": ["screen_name", "purpose", "ui_elements", "interactions", "connected_screens"],
+                    "properties": {
+                      "screen_name": { "type": "string" },
+                      "purpose": { "type": "string" },
+                      "ui_elements": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "interactions": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "connected_screens": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      },
+                      "ai_powered_elements": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                      }
+                    }
+                  }
+                },
+                "edge_cases": { "type": "array", "items": { "type": "string" } },
+                "do_not_build": { "type": "array", "items": { "type": "string" } },
+                "known_technical_risks": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_DemoScript": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "core_user_flow": { "type": "string", "description": "Shortest path that proves the solution works." },
+                "preloaded_data_required": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "screen_sequence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "step_number": { "type": "integer" },
+                      "screen": { "type": "string" },
+                      "what_to_say": { "type": "string" },
+                      "what_to_show": { "type": "string" }
+                    }
+                  }
+                },
+                "what_not_to_show": { "type": "array", "items": { "type": "string" } },
+                "time_budget_seconds": { "type": ["integer", "null"] },
+                "backup_plan": {
+                  "type": "object",
+                  "properties": {
+                    "screenshots_required": { "type": "array", "items": { "type": "string" } },
+                    "screen_recording_segments": { "type": "array", "items": { "type": "string" } },
+                    "live_failure_handling_script": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_PitchBrief": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "description": "Lightweight strategic skeleton — bullet points, not narrative. Teammates write the actual deck.",
+              "properties": {
+                "aida_outline": {
+                  "type": "object",
+                  "properties": {
+                    "attention": {
+                      "type": "object",
+                      "properties": {
+                        "talking_points": { "type": "array", "items": { "type": "string" } },
+                        "time_seconds": { "type": ["integer", "null"] },
+                        "visuals_slides": {
+                          "type": "array",
+                          "description": "Required visual or data assets for this AIDA section. 2-4 entries. Each entry names the asset type AND its specific content. Vague entries ('an image', 'a chart') are rejected at intake.",
+                          "minItems": 2,
+                          "maxItems": 4,
+                          "items": {
+                            "type": "object",
+                            "required": ["asset_type", "content"],
+                            "properties": {
+                              "asset_type": {
+                                "type": "string",
+                                "description": "The kind of asset, e.g. 'UI mockup', 'line chart', 'stat overlay', 'screenshot', 'architecture diagram'."
+                              },
+                              "content": {
+                                "type": "string",
+                                "description": "What the asset specifically shows. Concrete enough that a teammate could produce it without follow-up questions."
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "interest": {
+                      "type": "object",
+                      "properties": {
+                        "talking_points": { "type": "array", "items": { "type": "string" } },
+                        "time_seconds": { "type": ["integer", "null"] },
+                        "visuals_slides": {
+                          "type": "array",
+                          "description": "Required visual or data assets for this AIDA section. 2-4 entries. Each entry names the asset type AND its specific content.",
+                          "minItems": 2,
+                          "maxItems": 4,
+                          "items": {
+                            "type": "object",
+                            "required": ["asset_type", "content"],
+                            "properties": {
+                              "asset_type": { "type": "string" },
+                              "content": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "desire": {
+                      "type": "object",
+                      "properties": {
+                        "talking_points": { "type": "array", "items": { "type": "string" } },
+                        "time_seconds": { "type": ["integer", "null"] },
+                        "visuals_slides": {
+                          "type": "array",
+                          "description": "Required visual or data assets for this AIDA section. 2-4 entries. Each entry names the asset type AND its specific content.",
+                          "minItems": 2,
+                          "maxItems": 4,
+                          "items": {
+                            "type": "object",
+                            "required": ["asset_type", "content"],
+                            "properties": {
+                              "asset_type": { "type": "string" },
+                              "content": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "action": {
+                      "type": "object",
+                      "properties": {
+                        "talking_points": { "type": "array", "items": { "type": "string" } },
+                        "time_seconds": { "type": ["integer", "null"] },
+                        "visuals_slides": {
+                          "type": "array",
+                          "description": "Required visual or data assets for this AIDA section. 2-4 entries. Each entry names the asset type AND its specific content.",
+                          "minItems": 2,
+                          "maxItems": 4,
+                          "items": {
+                            "type": "object",
+                            "required": ["asset_type", "content"],
+                            "properties": {
+                              "asset_type": { "type": "string" },
+                              "content": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "judge_calibration_notes": {
+                  "type": "array",
+                  "description": "Per judge persona, what to emphasize.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "persona_label": { "type": "string" },
+                      "emphasize": { "type": "array", "items": { "type": "string" } },
+                      "deemphasize": { "type": "array", "items": { "type": "string" } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_JudgeObjectionMap": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "objection_sets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["persona_label", "top_objections"],
+                    "properties": {
+                      "persona_label": { "type": "string" },
+                      "top_objections": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "object",
+                          "required": ["objection", "why_it_costs_points", "preemption_strategy"],
+                          "properties": {
+                            "objection": { "type": "string" },
+                            "why_it_costs_points": { "type": "string" },
+                            "preemption_strategy": { "type": "string" }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_QAPrep": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "anticipated_questions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["question", "recommended_answer", "fallback_answer"],
+                    "properties": {
+                      "question": { "type": "string" },
+                      "associated_persona": { "type": ["string", "null"] },
+                      "recommended_answer": { "type": "string" },
+                      "fallback_answer": { "type": "string", "description": "One-sentence safe answer for partial-knowledge cases." }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_Debrief": {
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "type": "object",
+                  "properties": {
+                    "result": { "type": "string", "enum": ["won_first", "podium", "honorable_mention", "no_placement", "did_not_submit", "other"] },
+                    "notes": { "type": ["string", "null"] }
+                  }
+                },
+                "phase_retrospectives": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "phase": { "type": "integer" },
+                      "what_went_well": { "type": "array", "items": { "type": "string" } },
+                      "what_went_wrong": { "type": "array", "items": { "type": "string" } },
+                      "discovered_too_late": { "type": "array", "items": { "type": "string" } }
+                    }
+                  }
+                },
+                "judge_feedback_received": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "would_do_differently": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "vault_update_proposals": {
+                  "type": "object",
+                  "description": "Structured proposals for Phase 0 infrastructure updates. User reviews and applies manually.",
+                  "properties": {
+                    "boilerplate_proposals": { "type": "array", "items": { "type": "string" } },
+                    "judge_organizer_proposals": { "type": "array", "items": { "type": "string" } },
+                    "winning_solutions_proposals": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "Section_ExternalContextNotes": {
+      "description": "User-maintained free-form Markdown notes section. Never auto-populated by an intake; never auto-stale. The user opens the editor in the PCD Viewer (or the side panel on Grill-Me-eligible Prompt Generator cards) and saves Markdown directly. is_populated flips to true on first non-empty save. The Prompt Generator may inject this section into Grill-Me prompts via the 'if_user_provided' inclusion rule, giving long Grill-Me dialogues durable cross-session memory of past LLM interactions without Startup managing live chat history.",
+      "allOf": [
+        { "$ref": "#/$defs/SectionEnvelope" },
+        {
+          "properties": {
+            "data": {
+              "type": "string",
+              "description": "Free-form Markdown body. User-authored only. Empty string when the section has not yet been populated."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

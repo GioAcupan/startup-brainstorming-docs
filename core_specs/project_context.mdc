@@ -1,0 +1,49 @@
+---
+description: Startup project — design non-negotiables, architectural rails, and pointers to depth docs. Always loaded.
+alwaysApply: true
+---
+
+# Startup — Project Context
+
+You are working on **Startup**, a solo, web-based AI command center that orchestrates the workflow of going from a hackathon brief to a submission-ready, judge-optimized product. Single user, local-first, free-tier infrastructure.
+
+## Architectural rails — do not deviate
+
+- **Canonical store: JSON, validated against `pcd_schema.json`.** Markdown is rendered from JSON, never read back as canonical. The deterministic `renderPCDToMarkdown` function is the only producer of human-readable views and exports.
+- **Persistence: IndexedDB via Dexie, encrypted with AES-GCM (PBKDF2-derived key).** No backend database. Indexes (project name, phase, dates, tags) stored unencrypted; PCD content blob encrypted.
+- **Internal AI engine: Gemini Flash via Cloudflare Workers proxy.** The proxy is the only place the API key lives. Frontend calls the proxy; never calls Gemini directly. Single endpoint: `POST /api/extract`.
+- **External LLMs: never called from the app.** Startup generates prompts, the user runs them in their LLM of choice, the user pastes back, Flash extracts.
+- **Phase 4 is a one-way gate.** Once `phase_4_gate_crossed === true`, that field never returns to false. Scope changes go through the Addendum Protocol only — never via "edit TID."
+- **Stack: React 18 + Vite + TypeScript (strict) + Tailwind + Zustand + Ajv + Dexie + react-router v6.** No Next.js. No SSR. No backend DB.
+
+## Design non-negotiables
+
+- **The PCD is the spine.** Every prompt reads from it; every intake writes to it via diff-and-confirm. Never write to the PCD silently. Every commit goes through a diff preview the user must confirm.
+- **Section-level staleness, not phase-level.** Backward navigation propagates `is_stale` along the dependency graph in `src/lib/stateMachine/dependencies.ts`. Phase 4 outputs are stale-exempt once the gate is crossed. Phase 6 outputs are never stale-tracked by design.
+- **The Competitive Pre-mortem is the only hard block in the system.** Phase 2 cannot be completed without `competitive_landscape.data.premortem_completed === true`. No override. Every other gate has an override path with logged justification.
+- **Three-tier intake handling: clean / partial / failed.** Never write a partial extract to the PCD without surfacing the missing/low-confidence fields to the user for review. Never write a failed extract at all — fall through to manual entry.
+- **Vault = descriptions only, never code.** The Boilerplate Library stores component descriptions, references, what-worked / what-didn't. Code lives in the user's own repos. Never store actual source code in Vault entries.
+- **Vault stays out of PCD content.** Vault entries are referenced by ID only. The PCD records `vault_references.<store>_ids[]`. Entry contents are resolved at render time, not duplicated.
+
+## What NOT to build (MVP discipline)
+
+- **No Cursor integration during Phase 5.** Build Checklist is manually checked off. No commit hooks, no API integration. Startup is a reference document during the build.
+- **No bespoke UI for Settings.** All settings (default rubric, LLM preferences, proxy URL, deadline intervals) are edited as JSON blobs with validate-on-save. No form-based editors.
+- **No telemetry, no analytics, no cloud sync.** The Phase Gate Log is local-only. Stretch goals are out of scope.
+- **No pitch storyboard or full pitch script.** Phase 6 produces a lightweight Pitch Brief (bullet talking points), Judge Objection Map, and Q&A Prep. Teammates write the actual deck and script.
+- **No multi-user, no team collaboration.** Solo only. The encryption layer assumes single user per browser profile.
+- **No SQL.** Vault queries are keyword + tag against Dexie indexes. Plaintext search is sufficient.
+
+## UX principle: prescriptive voice
+
+Every piece of microcopy is directive. "Run the competitive pre-mortem" not "You may wish to run the competitive pre-mortem." Empty states tell the user the next action. Disabled CTAs explain in tooltip what is missing. Error messages tell the user what to do, not what went wrong.
+
+High-friction (typed phrase / justification required): crossing the Phase 4 gate, initiating the Addendum Protocol, overriding a phase gate, clearing all data. Low-friction (one click): generating a prompt, copying it, confirming a clean intake diff, marking a stale section valid.
+
+## Where to look for depth
+
+- **Full implementation spec:** `STARTUP_IMPLEMENTATION_SPEC.md` (~9k words; sections numbered 1-11; reference §-numbers in commits and PRs).
+- **Canonical PCD shape:** `pcd_schema.json` (JSON Schema draft 2020-12; the source of truth for every field, type, and dependency).
+- **Default Judging Rubric content:** `default_judging_rubric.md` (parsed at app startup into `Section_ActiveJudgingRubric`).
+
+When in doubt, the schema is canonical and the spec is the explanation.
