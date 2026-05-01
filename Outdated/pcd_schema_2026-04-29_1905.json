@@ -183,22 +183,13 @@
             "staleness_resolved_manual_edit",
             "phase_4_gate_crossed",
             "addendum_created",
-            "vault_query_logged",
-            "prompt_generated",
-            "grill_me_session_initiated",
-            "grill_me_session_resolved",
-            "grill_me_adjustment_dismissed"
+            "vault_query_logged"
           ]
         },
         "details": { "type": "string" },
         "user_justification": {
           "type": ["string", "null"],
           "description": "Required for override events. Optional otherwise."
-        },
-        "payload": {
-          "type": ["object", "null"],
-          "additionalProperties": true,
-          "description": "Event-type-specific structured data. Shape varies by event_type. Examples: vault_query_logged → { store, query, result_count, included_ids }; prompt_generated → { phase, template_id, runtime_inputs_used, included_section_ids, included_vault_ids, token_estimate }; grill_me_session_initiated → { source_card, target_section_path }; grill_me_session_resolved → { applied_adjustments_count, dismissed_adjustments_count }; grill_me_adjustment_dismissed → { field_path, proposed_value, reason }. Schema-loose by design — additive log evolution should not require schema migrations."
         }
       }
     },
