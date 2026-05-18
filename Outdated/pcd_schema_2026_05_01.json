@@ -233,12 +233,6 @@
               "type": "object",
               "properties": {
                 "hackathon_name": { "type": "string" },
-                "mode": {
-                  "type": "string",
-                  "enum": ["standard", "fast"],
-                  "default": "standard",
-                  "description": "Hackathon workflow mode. 'standard' runs the full diligence flow (Phase 1 Deep Research, Phase 2 hypotheses and user research, Phase 3 SCAMPER + JTBD + Brainwriting + divergent candidates + stress test, Phase 4 with optional Design Grill, Phase 6 with pitch review and Q&A prep). 'fast' runs the compressed same-day variant (Phase 1 one-shot research, Phase 2 problem analysis + competitive pre-mortem only, Phase 3 divergent candidates only synthesized directly from problem + competitive landscape, Phase 4 three documents in parallel, Phase 6 pitch brief only). Set at project init via 'startup-tools init --mode <standard|fast>'. Switchable mid-event up to and including Phase 4 via 'startup-tools set-mode'; locked after the Phase 4 gate is crossed. The competitive pre-mortem hard block and the Phase 4 gate ceremony apply identically in both modes."
-                },
                 "organizer": {
                   "type": "object",
                   "properties": {
